@@ -70,28 +70,66 @@ app.put('/api/events/stop/:id', async (req, res) => {
 
 app.post('/api/events/prior', async (req, res) => {
   try {
-    const { workerId, eventName, workerRole, startDate, endDate, mealAmount, mealReceiptBase64, rideAmount, rideReceiptBase64 } = req.body;
-    const start = new Date(startDate); const end = new Date(endDate);
+    const { workerId, eventName, workerRole, startDate, endDate, mealAmount, mealReceiptsBase64, rideAmount, rideReceiptsBase64 } = req.body;
+    const start = new Date(startDate); 
+    const end = new Date(endDate);
     const diffTime = Math.abs(end.getTime() - start.getTime());
     const totalDaysWorked = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
-    const event = await prisma.event.create({ data: { workerId, eventName, workerRole, startDate: start, endDate: end, status: 'COMPLETED', wageStatus: 'PENDING', totalDaysWorked } });
+    
+    // Create the event
+    const event = await prisma.event.create({ 
+      data: { workerId, eventName, workerRole, startDate: start, endDate: end, status: 'COMPLETED', wageStatus: 'PENDING', totalDaysWorked } 
+    });
     
     let totalExpenseAmount = 0;
+
+    // Process Meal Expenses
     if (mealAmount) {
-      let receiptUrl = 'no-image-uploaded';
-      if (mealReceiptBase64) { const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${mealReceiptBase64}`, { folder: 'magna_receipts' }); receiptUrl = uploadRes.secure_url; }
-      await prisma.expense.create({ data: { eventId: event.id, workerId, amount: parseFloat(mealAmount), expenseType: 'MEAL', receiptImageUrl: receiptUrl } });
-      totalExpenseAmount += parseFloat(mealAmount);
+      const numMealAmount = parseFloat(mealAmount);
+      
+      // If no images were uploaded, create one expense with no image
+      if (!mealReceiptsBase64 || mealReceiptsBase64.length === 0) {
+        await prisma.expense.create({ data: { eventId: event.id, workerId, amount: numMealAmount, expenseType: 'MEAL', receiptImageUrl: 'no-image-uploaded' } });
+        totalExpenseAmount += numMealAmount;
+      } else {
+        // If multiple images exist, split the amount equally across the receipts
+        const splitAmount = parseFloat((numMealAmount / mealReceiptsBase64.length).toFixed(2));
+        
+        for (const base64Str of mealReceiptsBase64) {
+          const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${base64Str}`, { folder: 'magna_receipts' });
+          await prisma.expense.create({ data: { eventId: event.id, workerId, amount: splitAmount, expenseType: 'MEAL', receiptImageUrl: uploadRes.secure_url } });
+        }
+        totalExpenseAmount += numMealAmount;
+      }
     }
+
+    // Process Transport (Ride) Expenses
     if (rideAmount) {
-      let receiptUrl = 'no-image-uploaded';
-      if (rideReceiptBase64) { const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${rideReceiptBase64}`, { folder: 'magna_receipts' }); receiptUrl = uploadRes.secure_url; }
-      await prisma.expense.create({ data: { eventId: event.id, workerId, amount: parseFloat(rideAmount), expenseType: 'RIDE', receiptImageUrl: receiptUrl } });
-      totalExpenseAmount += parseFloat(rideAmount);
+      const numRideAmount = parseFloat(rideAmount);
+      
+      if (!rideReceiptsBase64 || rideReceiptsBase64.length === 0) {
+        await prisma.expense.create({ data: { eventId: event.id, workerId, amount: numRideAmount, expenseType: 'RIDE', receiptImageUrl: 'no-image-uploaded' } });
+        totalExpenseAmount += numRideAmount;
+      } else {
+        const splitAmount = parseFloat((numRideAmount / rideReceiptsBase64.length).toFixed(2));
+        
+        for (const base64Str of rideReceiptsBase64) {
+          const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${base64Str}`, { folder: 'magna_receipts' });
+          await prisma.expense.create({ data: { eventId: event.id, workerId, amount: splitAmount, expenseType: 'RIDE', receiptImageUrl: uploadRes.secure_url } });
+        }
+        totalExpenseAmount += numRideAmount;
+      }
     }
-    if (totalExpenseAmount > 0) await prisma.user.update({ where: { id: workerId }, data: { totalPendingBalance: { increment: totalExpenseAmount } } });
+
+    // Update worker's total pending balance
+    if (totalExpenseAmount > 0) {
+      await prisma.user.update({ where: { id: workerId }, data: { totalPendingBalance: { increment: totalExpenseAmount } } });
+    }
+    
     res.json(event);
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) { 
+    res.status(500).json({ error: error.message }); 
+  }
 });
 
 // 3. EXPENSES & DASHBOARD
