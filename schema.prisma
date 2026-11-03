@@ -21,6 +21,7 @@ model User {
   
   events              Event[]
   expenses            Expense[]
+  pushToken           String?
 }
 
 model Event {

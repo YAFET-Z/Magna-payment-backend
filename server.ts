@@ -45,6 +45,15 @@ app.put('/api/users/setup/:id', async (req, res) => {
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
+// NEW: Save Expo Push Token
+app.put('/api/users/push-token/:id', async (req, res) => {
+  try {
+    const { token } = req.body;
+    await prisma.user.update({ where: { id: req.params.id }, data: { pushToken: token } });
+    res.json({ message: 'Token saved' });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
 // 2. EVENTS (TIME TRACKING)
 app.post('/api/events/start', async (req, res) => {
   try {
@@ -76,25 +85,19 @@ app.post('/api/events/prior', async (req, res) => {
     const diffTime = Math.abs(end.getTime() - start.getTime());
     const totalDaysWorked = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
     
-    // Create the event
     const event = await prisma.event.create({ 
       data: { workerId, eventName, workerRole, startDate: start, endDate: end, status: 'COMPLETED', wageStatus: 'PENDING', totalDaysWorked } 
     });
     
     let totalExpenseAmount = 0;
 
-    // Process Meal Expenses
     if (mealAmount) {
       const numMealAmount = parseFloat(mealAmount);
-      
-      // If no images were uploaded, create one expense with no image
       if (!mealReceiptsBase64 || mealReceiptsBase64.length === 0) {
         await prisma.expense.create({ data: { eventId: event.id, workerId, amount: numMealAmount, expenseType: 'MEAL', receiptImageUrl: 'no-image-uploaded' } });
         totalExpenseAmount += numMealAmount;
       } else {
-        // If multiple images exist, split the amount equally across the receipts
         const splitAmount = parseFloat((numMealAmount / mealReceiptsBase64.length).toFixed(2));
-        
         for (const base64Str of mealReceiptsBase64) {
           const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${base64Str}`, { folder: 'magna_receipts' });
           await prisma.expense.create({ data: { eventId: event.id, workerId, amount: splitAmount, expenseType: 'MEAL', receiptImageUrl: uploadRes.secure_url } });
@@ -103,16 +106,13 @@ app.post('/api/events/prior', async (req, res) => {
       }
     }
 
-    // Process Transport (Ride) Expenses
     if (rideAmount) {
       const numRideAmount = parseFloat(rideAmount);
-      
       if (!rideReceiptsBase64 || rideReceiptsBase64.length === 0) {
         await prisma.expense.create({ data: { eventId: event.id, workerId, amount: numRideAmount, expenseType: 'RIDE', receiptImageUrl: 'no-image-uploaded' } });
         totalExpenseAmount += numRideAmount;
       } else {
         const splitAmount = parseFloat((numRideAmount / rideReceiptsBase64.length).toFixed(2));
-        
         for (const base64Str of rideReceiptsBase64) {
           const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${base64Str}`, { folder: 'magna_receipts' });
           await prisma.expense.create({ data: { eventId: event.id, workerId, amount: splitAmount, expenseType: 'RIDE', receiptImageUrl: uploadRes.secure_url } });
@@ -121,7 +121,6 @@ app.post('/api/events/prior', async (req, res) => {
       }
     }
 
-    // Update worker's total pending balance
     if (totalExpenseAmount > 0) {
       await prisma.user.update({ where: { id: workerId }, data: { totalPendingBalance: { increment: totalExpenseAmount } } });
     }
@@ -191,29 +190,56 @@ app.get('/api/finance/all-workers', async (req, res) => {
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
+// SETTLE EXPENSES + NOTIFICATION
 app.put('/api/expenses/settle/:workerId', async (req, res) => {
   try {
     const { settlementReceiptBase64 } = req.body;
     let settlementReceiptUrl = null;
     if (settlementReceiptBase64) { const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${settlementReceiptBase64}`, { folder: 'magna_settlements' }); settlementReceiptUrl = uploadRes.secure_url; }
+    
     await prisma.expense.updateMany({ where: { workerId: req.params.workerId, status: 'PENDING' }, data: { status: 'SETTLED', settlementReceiptUrl } });
-    await prisma.user.update({ where: { id: req.params.workerId }, data: { totalPendingBalance: 0 } });
+    const worker = await prisma.user.update({ where: { id: req.params.workerId }, data: { totalPendingBalance: 0 } });
+    
+    // SEND PUSH NOTIFICATION
+    if (worker?.pushToken) {
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: worker.pushToken, title: 'Expenses Paid 💸', body: `Your pending expenses have been successfully settled.` }),
+      });
+    }
+
     res.json({ message: 'Expenses settled.' });
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
-// SINGLE EVENT WAGE SETTLEMENT
+// SINGLE EVENT WAGE SETTLEMENT + NOTIFICATION
 app.put('/api/finance/settle-wage/:eventId', async (req, res) => {
   try {
     const { wageSettlementBase64 } = req.body;
     let wageSettlementReceipt = null;
     if (wageSettlementBase64) { const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${wageSettlementBase64}`, { folder: 'magna_wages' }); wageSettlementReceipt = uploadRes.secure_url; }
-    await prisma.event.update({ where: { id: req.params.eventId }, data: { wageStatus: 'SETTLED', wageSettlementReceipt } });
+    
+    const updatedEvent = await prisma.event.update({ 
+      where: { id: req.params.eventId }, 
+      data: { wageStatus: 'SETTLED', wageSettlementReceipt },
+      include: { worker: true }
+    });
+
+    // SEND PUSH NOTIFICATION
+    if (updatedEvent.worker?.pushToken) {
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: updatedEvent.worker.pushToken, title: 'Payroll Settled! 💰', body: `Your wage for ${updatedEvent.eventName} has been paid.` }),
+      });
+    }
+
     res.json({ message: 'Wages settled.' });
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
-// NEW: BULK WAGE SETTLEMENT BY SELECTED EVENTS
+// BULK WAGE SETTLEMENT + NOTIFICATION
 app.put('/api/finance/settle-wages-bulk', async (req, res) => {
   try {
     const { eventIds, wageSettlementBase64 } = req.body;
@@ -225,10 +251,18 @@ app.put('/api/finance/settle-wages-bulk', async (req, res) => {
       wageSettlementReceipt = uploadRes.secure_url; 
     }
     
-    await prisma.event.updateMany({ 
-      where: { id: { in: eventIds } }, 
-      data: { wageStatus: 'SETTLED', wageSettlementReceipt } 
-    });
+    await prisma.event.updateMany({ where: { id: { in: eventIds } }, data: { wageStatus: 'SETTLED', wageSettlementReceipt } });
+    
+    // Find worker to notify (assuming bulk selection belongs to one worker in this context)
+    const affectedEvent = await prisma.event.findFirst({ where: { id: eventIds[0] }, include: { worker: true } });
+    if (affectedEvent?.worker?.pushToken) {
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: affectedEvent.worker.pushToken, title: 'Payroll Settled! 💰', body: `Multiple field days have been successfully paid.` }),
+      });
+    }
+
     res.json({ message: 'Selected wages settled successfully.' });
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
