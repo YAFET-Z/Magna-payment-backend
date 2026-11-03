@@ -119,7 +119,6 @@ app.get('/api/worker/dashboard/:id', async (req, res) => {
     const worker = await prisma.user.findUnique({ where: { id: req.params.id } });
     const activeEvent = await prisma.event.findFirst({ where: { workerId: req.params.id, status: 'ONGOING' }, include: { expenses: { orderBy: { createdAt: 'desc' } } } });
     const completedEvents = await prisma.event.findMany({ where: { workerId: req.params.id, status: 'COMPLETED' }, orderBy: { endDate: 'desc' }, include: { expenses: true } });
-    // NEW: Fetching settled expenses for worker monthly history
     const settledExpenses = await prisma.expense.findMany({ where: { workerId: req.params.id, status: 'SETTLED' }, orderBy: { createdAt: 'desc' }, include: { event: true } });
     res.json({ worker, activeEvent, completedEvents, settledExpenses, totalUnowedBalance: worker?.totalPendingBalance || 0 });
   } catch (error: any) { res.status(500).json({ error: error.message }); }
@@ -139,7 +138,6 @@ app.get('/api/finance/company-pending-expenses', async (req, res) => {
 
 app.get('/api/finance/company-pending-wages', async (req, res) => {
   try {
-    // Grouping by Worker for the Payroll Tab
     const workers = await prisma.user.findMany({
       where: { events: { some: { status: 'COMPLETED', wageStatus: 'PENDING' } } },
       include: { events: { where: { status: 'COMPLETED', wageStatus: 'PENDING' }, orderBy: { endDate: 'desc' } } }
@@ -150,7 +148,6 @@ app.get('/api/finance/company-pending-wages', async (req, res) => {
 
 app.get('/api/finance/all-workers', async (req, res) => {
   try {
-    // Fetches everyone for the new 'Workers' tab
     const workers = await prisma.user.findMany({ where: { role: 'WORKER' }, orderBy: { fullName: 'asc' } });
     res.json(workers);
   } catch (error: any) { res.status(500).json({ error: error.message }); }
@@ -167,6 +164,7 @@ app.put('/api/expenses/settle/:workerId', async (req, res) => {
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
+// SINGLE EVENT WAGE SETTLEMENT
 app.put('/api/finance/settle-wage/:eventId', async (req, res) => {
   try {
     const { wageSettlementBase64 } = req.body;
@@ -176,6 +174,27 @@ app.put('/api/finance/settle-wage/:eventId', async (req, res) => {
     res.json({ message: 'Wages settled.' });
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
+
+// NEW: BULK WAGE SETTLEMENT BY SELECTED EVENTS
+app.put('/api/finance/settle-wages-bulk', async (req, res) => {
+  try {
+    const { eventIds, wageSettlementBase64 } = req.body;
+    if (!eventIds || !Array.isArray(eventIds) || eventIds.length === 0) return res.status(400).json({ error: 'No events selected' });
+    
+    let wageSettlementReceipt = null;
+    if (wageSettlementBase64) { 
+      const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${wageSettlementBase64}`, { folder: 'magna_wages' }); 
+      wageSettlementReceipt = uploadRes.secure_url; 
+    }
+    
+    await prisma.event.updateMany({ 
+      where: { id: { in: eventIds } }, 
+      data: { wageStatus: 'SETTLED', wageSettlementReceipt } 
+    });
+    res.json({ message: 'Selected wages settled successfully.' });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
 
 // 5. EDIT & DELETE LOGS
 app.put('/api/expenses/:id', async (req, res) => {
