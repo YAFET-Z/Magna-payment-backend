@@ -9,9 +9,7 @@
     "@prisma/client": "^5.22.0",
     "cloudinary": "^2.x",
     "cors": "^2.8.5",
-    "express": "^4.19.2"
-  },
-  "devDependencies": {
+    "express": "^4.19.2",
     "prisma": "^5.22.0",
     "tsx": "^4.7.0",
     "typescript": "^5.x"
