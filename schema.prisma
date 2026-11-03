@@ -1,0 +1,56 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id                  String    @id @default(uuid())
+  fullName            String
+  email               String    @unique
+  password            String
+  role                String    @default("WORKER")
+  dailyWage           Float     @default(0.0) // <-- Track how much they earn per day
+  totalPendingBalance Float     @default(0.0) 
+  bankAccount         String?
+  telebirr            String?
+  requiresSetup       Boolean   @default(true)
+  
+  events              Event[]
+  expenses            Expense[]
+}
+
+model Event {
+  id                   String    @id @default(uuid())
+  workerId             String
+  eventName            String
+  workerRole           String
+  status               String    @default("ONGOING") // ONGOING or COMPLETED
+  startDate            DateTime  @default(now())
+  endDate              DateTime? // Set when worker hits "Stop Event"
+  totalDaysWorked      Int       @default(0) // Calculated on stop
+  
+  wageStatus           String    @default("PENDING") // PENDING or SETTLED
+  wageSettlementReceipt String?  // Manager's upload when paying the daily wages
+  
+  worker               User      @relation(fields: [workerId], references: [id])
+  expenses             Expense[]
+}
+
+model Expense {
+  id                   String    @id @default(uuid())
+  eventId              String?
+  workerId             String
+  amount               Float
+  expenseType          String
+  receiptImageUrl      String
+  settlementReceiptUrl String?
+  status               String    @default("PENDING")
+  createdAt            DateTime  @default(now())
+  
+  event                Event?    @relation(fields: [eventId], references: [id])
+  worker               User      @relation(fields: [workerId], references: [id])
+} 

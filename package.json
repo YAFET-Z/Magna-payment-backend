@@ -1,0 +1,19 @@
+{
+  "name": "magna-backend",
+  "version": "1.0.0",
+  "main": "server.ts",
+  "scripts": {
+    "start": "npx tsx server.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "cloudinary": "^2.x",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.x"
+  }
+}
